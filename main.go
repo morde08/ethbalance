@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/params"
 	"math/big"
 	"net/http"
 	"os"
@@ -16,7 +17,6 @@ import (
 var (
 	allWatched  []*Watched
 	port        string
-	updates     string
 	prefix      string
 	loadSeconds float64
 	totalLoaded int64
@@ -29,23 +29,31 @@ type Watched struct {
 	Balance string
 }
 
-// Connect to Geth server
+// ConnectionToGeth Connect to Geth server
 func ConnectionToGeth(url string) error {
 	var err error
 	eth, err = ethclient.Dial(url)
+	if err != nil {
+		fmt.Printf("Error connecting to Geth on url: %v\n", url)
+	}
 	return err
 }
 
-// Fetch ETH balance for an address from Geth server
+// WeiToEther WEI to ETH conversion
+func weiToEther(wei *big.Int) *big.Float {
+	return new(big.Float).Quo(new(big.Float).SetInt(wei), big.NewFloat(params.Ether))
+}
+
+// GetEthBalance Fetch ETH balance for an address from Geth server
 func GetEthBalance(address string) *big.Float {
 	balance, err := eth.BalanceAt(context.TODO(), common.HexToAddress(address), nil)
 	if err != nil {
 		fmt.Printf("Error fetching ETH Balance for address: %v\n", address)
 	}
-	return ToEther(balance)
+	return weiToEther(balance)
 }
 
-// Fetch current block from Geth server
+// CurrentBlock Fetch current block from Geth server
 func CurrentBlock() uint64 {
 	block, err := eth.BlockByNumber(context.TODO(), nil)
 	if err != nil {
@@ -55,15 +63,36 @@ func CurrentBlock() uint64 {
 	return block.NumberU64()
 }
 
-// WEI to ETH conversion
-func ToEther(o *big.Int) *big.Float {
-	pul, int := big.NewFloat(0), big.NewFloat(0)
-	int.SetInt(o)
-	pul.Mul(big.NewFloat(0.000000000000000001), int)
-	return pul
+// OpenAddresses Open the addresses.txt file and load all addresses into memory
+func OpenAddresses(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			panic(err)
+		}
+	}(file)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		object := strings.Split(scanner.Text(), ":")
+		if common.IsHexAddress(object[1]) {
+			w := &Watched{
+				Name:    object[0],
+				Address: object[1],
+			}
+			allWatched = append(allWatched, w)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return err
 }
 
-// HTTP response handler for /metrics endpoint
+// MetricsHttp HTTP response handler for /metrics endpoint
 func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	var allOut []string
 	total := big.NewFloat(0)
@@ -83,34 +112,10 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, strings.Join(allOut, "\n"))
 }
 
-// Open the addresses.txt file (name:address)
-func OpenAddresses(filename string) error {
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		object := strings.Split(scanner.Text(), ":")
-		if common.IsHexAddress(object[1]) {
-			w := &Watched{
-				Name:    object[0],
-				Address: object[1],
-			}
-			allWatched = append(allWatched, w)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return err
-}
-
 func main() {
+	prefix = os.Getenv("PREFIX")
 	gethUrl := os.Getenv("GETH")
 	port = os.Getenv("PORT")
-	prefix = os.Getenv("PREFIX")
 
 	err := OpenAddresses("addresses.txt")
 	if err != nil {
@@ -141,7 +146,7 @@ func main() {
 
 	block := CurrentBlock()
 
-	fmt.Printf("ETHexporter has started on port %v using Geth server: %v at block #%v\n", port, gethUrl, block)
+	fmt.Printf("ETHbalance has started on port %v using Geth server: %v at block #%v\n", port, gethUrl, block)
 	http.HandleFunc("/metrics", MetricsHttp)
 	panic(http.ListenAndServe("0.0.0.0:"+port, nil))
 }
